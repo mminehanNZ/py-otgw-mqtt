@@ -8,7 +8,6 @@ import paho.mqtt.client as mqtt
 
 # Values used to parse boolean values of incoming messages
 true_values=('True', 'true', '1', 'y', 'yes')
-false_values=('False', 'false', '0', 'n', 'no')
 
 # Default settings
 settings = {
@@ -26,8 +25,8 @@ settings = {
         "username": None,
         "password": None,
         "qos": 0,
-        "pub_topic_namespace": "value/otgw",
-        "sub_topic_namespace": "set/otgw",
+        "pub_topic_namespace": "otgw/value",
+        "sub_topic_namespace": "otgw/set",
         "retain": False
     }
 }
@@ -48,38 +47,41 @@ def on_mqtt_connect(client, userdata, flags, rc):
     # a message telling we're online
     log.info("Connected with result code "+str(rc))
     mqtt_client.subscribe('{}/#'.format(settings['mqtt']['sub_topic_namespace']))
-    mqtt_client.subscribe('{}'.format(settings['mqtt']['sub_topic_namespace']))
     mqtt_client.publish(
         topic=opentherm.topic_namespace,
         payload="online",
         qos=settings['mqtt']['qos'],
-        retain=True)
+        retain=settings['mqtt']['retain'])
 
 def on_mqtt_message(client, userdata, msg):
     # Handle incoming messages
-    log.info("Received message on topic {} with payload {}".format(
-                msg.topic, str(msg.payload.decode('ascii', 'ignore'))))
-    namespace = settings['mqtt']['sub_topic_namespace']
+    # MM added MM= (max_relative_modulation) and SH= (max_ch_water_setpoint) to list incoming messages
+    log.debug("Received message on topic {} with payload {}".format(
+                msg.topic, str(msg.payload)))
     command_generators={
-        "{}/room_setpoint/temporary".format(namespace): \
-            lambda _ :"TT={:.2f}".format(float(_) if is_float(_) else 0),
-        "{}/room_setpoint/constant".format(namespace):  \
-            lambda _ :"TC={:.2f}".format(float(_) if is_float(_) else 0),
-        "{}/outside_temperature".format(namespace):     \
-            lambda _ :"OT={:.2f}".format(float(_) if is_float(_) else 99),
-        "{}/hot_water/enable".format(namespace):        \
-            lambda _ :"HW={}".format('1' if _ in true_values else '0' if _ in false_values else 'T'),
-        "{}/hot_water/temperature".format(namespace):   \
-            lambda _ :"SW={:.2f}".format(float(_) if is_float(_) else 60),
-        "{}/central_heating/enable".format(namespace):  \
-            lambda _ :"CH={}".format('0' if _ in false_values else '1'),
-        # TODO: "set/otgw/raw/+": lambda _ :publish_to_otgw("PS", _)
+        "otgw/set/max_relative_modulation_level": \
+            lambda _ :"MM={:.0f}".format(float(_)),
+        "otgw/set/max_ch_water_setpoint": \
+            lambda _ :"SH={:.0f}".format(float(_)),
+        "otgw/set/room_setpoint/temporary": \
+            lambda _ :"TT={:.2f}".format(float(_)),
+        "otgw/set/room_setpoint/constant":  \
+            lambda _ :"TC={:.2f}".format(float(_)),
+        "otgw/set/outside_temperature":     \
+            lambda _ :"OT={:.2f}".format(float(_)),
+        "otgw/set/hot_water/enable":        \
+            lambda _ :"HW={}".format('1' if _ in true_values else '0'),
+        "otgw/set/hot_water/temperature":   \
+            lambda _ :"SW={:.2f}".format(float(_)),
+        "otgw/set/central_heating/enable":  \
+            lambda _ :"CH={}".format('1' if _ in true_values else '0'),
+        # TODO: "otgw/set/raw/+": lambda _ :publish_to_otgw("PS", _)
     }
     # Find the correct command generator from the dict above
     command_generator = command_generators.get(msg.topic)
     if command_generator:
         # Get the command and send it to the OTGW
-        command = command_generator(msg.payload.decode('ascii', 'ignore'))
+        command = command_generator(msg.payload)
         log.info("Sending command: '{}'".format(command))
         otgw_client.write("{}\r".format(command))
 
@@ -93,12 +95,6 @@ def on_otgw_message(message):
         qos=settings['mqtt']['qos'],
         retain=settings['mqtt']['retain'])
 
-def is_float(value):
-    try:
-        float(value)
-        return True
-    except ValueError:
-        return False
 
 log.info("Initializing MQTT")
 

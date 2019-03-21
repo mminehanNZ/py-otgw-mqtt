@@ -2,17 +2,21 @@ import re
 from threading import Lock, Thread
 import logging
 
+logging.basicConfig(filename='py_otgw_mqtt.log',level=logging.DEBUG)
+# unhash the above line to log to a file 
+
 log = logging.getLogger(__name__)
 
 # Default namespace for the topics. Will be overwritten with the value in
 # config
-topic_namespace="value/otgw"
+topic_namespace="otgw/value"
 
 # Parse hex string to int
 def hex_int(hex):
     return int(hex, 16)
 
 # Pre-compile a regex to parse valid OTGW-messages
+# e.g. R80000200
 line_parser = re.compile(
     r'^(?P<source>[BART])(?P<type>[0-9A-F])(?P<res>[0-9A-F])'
     r'(?P<id>[0-9A-F]{2})(?P<data>[0-9A-F]{4})$'
@@ -23,19 +27,26 @@ def flags_msg_generator(ot_id, val):
     r"""
     Generate the pub-messages from a boolean value.
 
-    Currently, only flame status is supported. Any other items will be returned
-    as-is.
+    Currently, boiler status is supported.
+    Marty Added bits 0,8,9 for fault,ch_enabled, and dhw_enabled.
 
     Returns a generator for the messages
     """
     yield ("{}/{}".format(topic_namespace, ot_id), val, )
-    if(ot_id == "flame_status"):
-        yield ("{}/flame_status_ch".format(topic_namespace),
+    if(ot_id == "boiler_status"):
+        yield ("{}/fault".format(topic_namespace),
+               val & ( 1 << 0 ) > 0, )
+        yield ("{}/ch_active".format(topic_namespace),
                val & ( 1 << 1 ) > 0, )
-        yield ("{}/flame_status_dhw".format(topic_namespace),
+        yield ("{}/dhw_active".format(topic_namespace),
                val & ( 1 << 2 ) > 0, )
-        yield ("{}/flame_status_bit".format(topic_namespace),
+        yield ("{}/flame_status".format(topic_namespace),
                val & ( 1 << 3 ) > 0, )
+        yield ("{}/ch_enabled".format(topic_namespace),
+               val & ( 1 << 8 ) > 0, )
+        yield ("{}/dhw_enabled".format(topic_namespace),
+               val & ( 1 << 9 ) > 0, )
+        
 
 def float_msg_generator(ot_id, val):
     r"""
@@ -58,8 +69,13 @@ def get_messages(message):
     Generate the pub-messages from the supplied OT-message
 
     Returns a generator for the messages
+
+    Marty added 5 to ttype below to capture max_relative_modulation_level 
+    and control_setpoint from boiler in a system with basic contact closure thermostat
+
     """
     info = line_parser.match(message)
+    log.info("Message is: '{}'".format(message))
     if info is None:
         if message:
             log.debug("Did not understand message: '{}'".format(message))
@@ -69,7 +85,7 @@ def get_messages(message):
             (str, lambda _: hex_int(_) & 7, hex_int, hex_int, hex_int),
             info.groups())
     if source not in ('B', 'T', 'A') \
-        or ttype not in (1,4) \
+        or ttype not in (1,4,5) \
         or did not in opentherm_ids:
         return iter([])
     id_name, parser = opentherm_ids[did]
@@ -80,7 +96,7 @@ def get_messages(message):
 # discriptive names and message creators. I put this here because the
 # referenced generators have to be assigned first
 opentherm_ids = {
-	0:   ("flame_status",flags_msg_generator,),
+	0:   ("boiler_status",flags_msg_generator,),
 	1:   ("control_setpoint",float_msg_generator,),
 	9:   ("remote_override_setpoint",float_msg_generator,),
 	14:  ("max_relative_modulation_level",float_msg_generator,),
@@ -202,8 +218,7 @@ class OTGWClient(object):
 
         while self._worker_running:
             # Call the read method of the implementation
-            data += self.read(timeout=0.5)
-
+            data += self.read()
             # Find all the lines in the read data
             while True:
                 m = line_splitter.match(data)
